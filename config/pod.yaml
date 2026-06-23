@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "go-server"
+  labels:
+    app: "go-server"
+spec:
+  containers:
+    - name: go-server
+      image: "emersondp07/hello-go:latest"
