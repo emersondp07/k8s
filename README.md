@@ -120,22 +120,6 @@ A principal vantagem sobre o ReplicaSet puro é o suporte a **rolling updates**:
 
 Este Deployment mantém 2 réplicas do `go-server` usando a imagem `v2`:
 
-```yaml
-spec:
-  selector:
-    matchLabels:
-      app: go-server
-  replicas: 2
-  template:
-    metadata:
-      labels:
-        app: go-server
-    spec:
-      containers:
-        - name: go-server
-          image: emersondp07/hello-go:v2
-```
-
 ### Comandos kubectl (Deployment)
 
 ```bash
@@ -152,10 +136,13 @@ kubectl describe deployment go-server
 # Ver o histórico de revisões
 kubectl rollout history deployment go-server
 
+# Ver detalhes de uma revisão específica (mostra a imagem usada)
+kubectl rollout history deployment go-server --revision=2
+
 # Acompanhar o status de um rollout em andamento
 kubectl rollout status deployment go-server
 
-# Fazer rollback para a revisão anterior
+# Fazer rollback para a revisão anterior (última versão estável)
 kubectl rollout undo deployment go-server
 
 # Fazer rollback para uma revisão específica
@@ -170,4 +157,129 @@ kubectl set image deployment go-server go-server=emersondp07/hello-go:v3
 # Deletar o Deployment (também deleta ReplicaSets e pods gerenciados)
 kubectl delete deployment go-server
 kubectl delete deploy go-server
+```
+
+### Fluxo de rollout e rollback
+
+O histórico de revisões só é útil se cada revisão tiver uma descrição. Para isso, anote o Deployment logo após cada `apply`:
+
+```bash
+# 1. Aplicar uma nova versão
+kubectl apply -f config/deployment.yaml
+
+# 2. Anotar a revisão com uma descrição (aparece em rollout history)
+kubectl annotate deployment go-server kubernetes.io/change-cause="atualiza imagem para v2"
+
+# 3. Verificar o histórico — a coluna CHANGE-CAUSE mostrará a anotação
+kubectl rollout history deployment go-server
+# REVISION  CHANGE-CAUSE
+# 1         atualiza imagem para v1
+# 2         atualiza imagem para v2
+
+# 4a. Voltar para a última versão estável (revisão anterior)
+kubectl rollout undo deployment go-server
+
+# 4b. Ou voltar para uma revisão específica pelo número
+kubectl rollout undo deployment go-server --to-revision=1
+
+# 5. Confirmar que o rollback concluiu
+kubectl rollout status deployment go-server
+```
+
+> **Importante:** Pods criados diretamente (sem Deployment) não suportam `rollout` — esse recurso existe apenas em Deployments (e StatefulSets/DaemonSets).
+
+---
+
+## service.yaml
+
+Define um **Service** — recurso do Kubernetes que expõe um conjunto de Pods como um endpoint de rede estável. Sem um Service, os Pods só são acessíveis pelo seu IP interno, que muda toda vez que o Pod é recriado.
+
+O Service usa o campo `selector` para encontrar os Pods que deve balancear: qualquer Pod com o label `app: go-server` receberá tráfego.
+
+Este Service expõe a porta `8080` via `ClusterIP`:
+
+```yaml
+spec:
+  selector:
+    app: go-server
+  type: ClusterIP
+  ports:
+    - name: go-server-service
+      port: 80        # porta exposta pelo Service dentro do cluster
+      targetPort: 8080 # porta que o container realmente escuta
+      protocol: TCP
+```
+
+### Tipos de Service
+
+| Type           | Acesso                                          | Uso típico                                           |
+| -------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| `ClusterIP`    | Somente dentro do cluster                       | Comunicação interna entre serviços                   |
+| `NodePort`     | Via IP do nó + porta fixa (30000–32767)         | Acesso externo em dev/testes sem load balancer       |
+| `LoadBalancer` | Via IP externo provisionado pelo cloud provider | Exposição em produção na AWS, GCP, Azure etc.        |
+| `ExternalName` | Alias DNS para um serviço externo               | Integrar serviços externos ao DNS interno do cluster |
+
+#### ClusterIP (padrão)
+
+Cria um IP virtual acessível apenas de dentro do cluster. É o tipo mais simples e mais usado para comunicação entre microserviços. Não é acessível de fora do cluster.
+
+```yaml
+type: ClusterIP
+ports:
+  - port: 8080 # porta que o Service expõe internamente
+    targetPort: 8080 # porta que o container escuta (padrão: igual a port)
+```
+
+#### NodePort
+
+Abre uma porta em **todos os nós** do cluster e redireciona o tráfego para o Service. Acessível de fora com `<IP-do-nó>:<nodePort>`. Útil para testes locais com kind/minikube sem precisar de load balancer.
+
+```yaml
+type: NodePort
+ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080 # porta no nó (omitir para o K8s escolher automaticamente)
+```
+
+#### LoadBalancer
+
+Provisiona automaticamente um load balancer externo no cloud provider (AWS ELB, GCP LB etc.) e atribui um IP público. Em ambientes locais como kind, o IP externo fica em `<pending>` a menos que ferramentas como MetalLB sejam configuradas.
+
+```yaml
+type: LoadBalancer
+ports:
+  - port: 80
+    targetPort: 8080
+```
+
+#### ExternalName
+
+Não cria proxy nem endpoints — apenas mapeia o nome do Service para um registro CNAME externo. Usado para abstrair serviços externos (ex: banco de dados gerenciado) dentro do DNS do cluster.
+
+```yaml
+type: ExternalName
+externalName: meu-banco.rds.amazonaws.com
+```
+
+### Comandos kubectl (Service)
+
+```bash
+# Criar/aplicar o Service no cluster
+kubectl apply -f config/service.yaml
+
+# Listar Services
+kubectl get services
+kubectl get svc
+
+# Ver detalhes do Service (endpoints, selector, portas)
+kubectl describe service go-server-service
+
+# Acessar o Service via port-forward (útil com ClusterIP em dev)
+# formato: <porta-local>:<port-do-service>
+kubectl port-forward service/go-server-service 8080:80
+
+# Deletar o Service
+kubectl delete service go-server-service
+kubectl delete svc go-server-service
 ```
