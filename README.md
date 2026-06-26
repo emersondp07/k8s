@@ -279,6 +279,15 @@ kubectl describe service go-server-service
 # formato: <porta-local>:<port-do-service>
 kubectl port-forward service/go-server-service 8080:80
 
+# Iniciar proxy para a API do Kubernetes (porta padrão 8001)
+kubectl proxy
+
+# Ou escolher uma porta específica
+kubectl proxy --port=8080
+
+# Com o proxy ativo, acessar o Service pelo caminho da API:
+# http://localhost:8080/api/v1/namespaces/default/services/go-server-service/proxy/
+
 # Deletar o Service
 kubectl delete service go-server-service
 kubectl delete svc go-server-service
