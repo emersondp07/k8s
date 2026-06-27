@@ -292,3 +292,75 @@ kubectl proxy --port=8080
 kubectl delete service go-server-service
 kubectl delete svc go-server-service
 ```
+
+---
+
+## configmap-env.yaml
+
+Define um **ConfigMap** — recurso do Kubernetes para armazenar configurações não-sensíveis como pares chave-valor. Desacopla a configuração da imagem Docker: a mesma imagem pode rodar com valores diferentes em cada ambiente (dev, staging, prod) sem precisar ser reconstruída.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-server-env
+data:
+  NAME: "Emerson"
+  AGE: "39"
+```
+
+### Como injetar o ConfigMap no Deployment
+
+Há duas formas de passar as variáveis para o container:
+
+**1. Todas as chaves de uma vez com `envFrom`** (usado neste projeto):
+
+```yaml
+containers:
+  - name: go-server
+    image: emersondp07/hello-go:v3
+    envFrom:
+      - configMapRef:
+          name: go-server-env  # injeta NAME e AGE como env vars automaticamente
+```
+
+**2. Chave por chave com `configMapKeyRef`** (mais verboso, permite renomear a variável):
+
+```yaml
+containers:
+  - name: go-server
+    env:
+      - name: NAME
+        valueFrom:
+          configMapKeyRef:
+            name: go-server-env
+            key: NAME
+      - name: AGE
+        valueFrom:
+          configMapKeyRef:
+            name: go-server-env
+            key: AGE
+```
+
+> Use `envFrom` quando quiser importar todas as chaves de uma vez. Use `configMapKeyRef` quando precisar selecionar chaves específicas ou renomeá-las dentro do container.
+
+### Comandos kubectl (ConfigMap)
+
+```bash
+# Criar/aplicar o ConfigMap
+kubectl apply -f config/configmap-env.yaml
+
+# Listar ConfigMaps
+kubectl get configmaps
+kubectl get cm
+
+# Ver os dados do ConfigMap
+kubectl describe configmap go-server-env
+
+# Ver em formato yaml (mostra os valores)
+kubectl get configmap go-server-env -o yaml
+
+# Deletar o ConfigMap
+kubectl delete configmap go-server-env
+kubectl delete cm go-server-env
+```

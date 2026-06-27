@@ -16,9 +16,32 @@ spec:
     spec:
       containers:
         - name: go-server
-          image: "emersondp07/hello-go:v3"
-          env:
-            - name: NAME
-              value: "Emerson"
-            - name: AGE
-              value: "29"
+          image: "emersondp07/hello-go:v5.1"
+          envFrom:
+            - configMapRef:
+                name: go-server-env
+
+          volumeMounts:
+            - mountPath: "/go/myfamily"
+              name: config
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: configmap-family
+            items:
+              - key: members
+                path: "family.txt"
+          # env:
+          #   - name: NAME
+          #     valueFrom:
+          #       configMapKeyRef:
+          #         name: go-server-env
+          #         key: NAME
+
+          #   - name: AGE
+          #     valueFrom:
+          #       configMapKeyRef:
+          #         name: go-server-env
+          #         key: AGE
