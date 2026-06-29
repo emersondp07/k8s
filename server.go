@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"os"
 	"log"
+	"time"
 	"io/ioutil"
 )
 
+var startedAt = time.Now()
+
 func main() {
+	http.HandleFunc("/healthz", Healthz)
 	http.HandleFunc("/secret", Secret)
 	http.HandleFunc("/configmap", ConfigMap)
 	http.HandleFunc("/", Hello)
@@ -36,4 +40,16 @@ func Secret(w http.ResponseWriter, r *http.Request) {
 	password := os.Getenv("PASSWORD")
 
 	fmt.Fprintf(w, "User: %s, Password: %s.", user, password)
+}
+
+func Healthz(w http.ResponseWriter, r *http.Request) {
+	durantion := time.Since(startedAt)
+	
+	if durantion.Seconds() > 25 {
+		w.WriteHeader(500)
+		w.Write([]byte(fmt.Sprintf("Duration: %v", durantion.Seconds())))	
+	} else {
+		w.WriteHeader(200)
+		w.Write([]byte("ok"))
+	}
 }

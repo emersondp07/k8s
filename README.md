@@ -118,7 +118,26 @@ Define um **Deployment** — recurso do Kubernetes que gerencia ReplicaSets e pe
 
 A principal vantagem sobre o ReplicaSet puro é o suporte a **rolling updates**: ao atualizar a imagem, o Kubernetes cria um novo ReplicaSet gradualmente, substituindo os pods antigos pelos novos sem downtime. O histórico de revisões é mantido, permitindo rollback.
 
-Este Deployment mantém 2 réplicas do `go-server` usando a imagem `v2`:
+### livenessProbe
+
+O `livenessProbe` instrui o Kubernetes a verificar periodicamente se o container ainda está saudável. Se o número de falhas consecutivas atingir o limite, o K8s reinicia o container automaticamente — sem intervenção manual.
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz  # endpoint que o K8s vai chamar
+    port: 8080
+  periodSeconds: 5      # intervalo entre cada verificação
+  failureThreshold: 3   # reinicia após 3 falhas consecutivas
+  timeoutSeconds: 1     # tempo máximo de espera por resposta
+  successThreshold: 1   # basta 1 resposta ok para considerar saudável
+```
+
+O K8s faz um `GET /healthz` a cada 5 segundos. Se o handler retornar `5xx` (ou não responder em 1 segundo) por 3 vezes seguidas, o container é reiniciado. Qualquer resposta `2xx` ou `3xx` conta como sucesso.
+
+No `server.go`, o handler `/healthz` retorna `500` se o servidor estiver rodando há mais de 25 segundos, simulando uma falha — o que força o K8s a reiniciar o Pod após `periodSeconds × failureThreshold` = 15 segundos de falha contínua.
+
+> **livenessProbe vs readinessProbe**: a liveness reinicia o container quando ele trava. A readiness (não configurada aqui) remove o Pod do balanceamento de carga quando ele não está pronto para receber tráfego — sem reiniciá-lo.
 
 ### Comandos kubectl (Deployment)
 
@@ -363,4 +382,121 @@ kubectl get configmap go-server-env -o yaml
 # Deletar o ConfigMap
 kubectl delete configmap go-server-env
 kubectl delete cm go-server-env
+```
+
+---
+
+## secret.yaml
+
+Define um **Secret** — recurso do Kubernetes para armazenar dados sensíveis (senhas, tokens, chaves). Funciona de forma similar ao ConfigMap, mas os valores são armazenados em **Base64** e o acesso pode ser restrito via RBAC.
+
+> Base64 **não é criptografia** — é apenas encoding. O Secret existe para separar dados sensíveis dos manifestos comuns e evitar que apareçam em logs ou no histórico do shell.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: go-server-secret
+type: Opaque
+data:
+  USER: "RW1lcnNvbgo="      # "Emerson" em Base64
+  PASSWORD: "MTAwOTE5OTYK"  # valor em Base64
+```
+
+O tipo `Opaque` é o genérico — usado para qualquer par chave-valor arbitrário.
+
+### Como codificar/decodificar Base64
+
+```bash
+# Codificar um valor para colocar no Secret
+echo -n "minha-senha" | base64
+
+# Decodificar para conferir o valor real
+echo "bWluaGEtc2VuaGE=" | base64 --decode
+```
+
+### Injetando o Secret no Deployment via `envFrom`
+
+O Deployment usa `envFrom` com múltiplas fontes — ConfigMap e Secret são carregados juntos:
+
+```yaml
+envFrom:
+  - configMapRef:
+      name: go-server-env      # injeta NAME e AGE
+  - secretRef:
+      name: go-server-secret   # injeta USER e PASSWORD
+```
+
+O container recebe todas as chaves como variáveis de ambiente. Se houver chaves com o mesmo nome em fontes diferentes, a última declarada sobrescreve.
+
+### Comandos kubectl (Secret)
+
+```bash
+# Criar/aplicar o Secret
+kubectl apply -f config/secret.yaml
+
+# Listar Secrets
+kubectl get secrets
+
+# Ver metadados (os valores ficam ocultos)
+kubectl describe secret go-server-secret
+
+# Ver os valores em Base64 (decodifique manualmente se precisar)
+kubectl get secret go-server-secret -o yaml
+
+# Deletar o Secret
+kubectl delete secret go-server-secret
+```
+
+---
+
+## configmap-family.yaml e volumeMounts
+
+Além de injetar variáveis de ambiente, um ConfigMap pode ser montado como **arquivo dentro do container** via `volumeMounts`. Isso é útil quando a aplicação espera ler uma configuração de um caminho no filesystem.
+
+O `configmap-family` armazena uma string com membros da família:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configmap-family
+data:
+  members: "Emerson, Julianny, Edna"
+```
+
+No Deployment, esse ConfigMap é montado como o arquivo `/go/myfamily/family.txt`:
+
+```yaml
+containers:
+  - name: go-server
+    volumeMounts:
+      - mountPath: "/go/myfamily"  # diretório criado dentro do container
+        name: config
+        readOnly: true             # container não pode modificar o arquivo
+
+volumes:
+  - name: config
+    configMap:
+      name: configmap-family
+      items:
+        - key: members         # chave do ConfigMap
+          path: "family.txt"   # nome do arquivo gerado dentro do mountPath
+```
+
+O fluxo é: `volumes` define a fonte (o ConfigMap) → `volumeMounts` define onde montar dentro do container. O campo `items` seleciona quais chaves viram arquivos e com qual nome — sem ele, cada chave vira um arquivo separado com o próprio nome da chave.
+
+O handler `/configmap` no `server.go` lê esse arquivo com `ioutil.ReadFile("/go/myfamily/family.txt")` e retorna o conteúdo na resposta HTTP.
+
+### Comandos kubectl (configmap-family)
+
+```bash
+# Criar/aplicar o ConfigMap de família
+kubectl apply -f config/configmap-family.yaml
+
+# Confirmar que o arquivo foi montado no container
+kubectl exec -it <nome-do-pod> -- cat /go/myfamily/family.txt
+
+# Listar todos os ConfigMaps
+kubectl get configmaps
 ```
