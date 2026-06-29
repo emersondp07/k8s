@@ -118,26 +118,59 @@ Define um **Deployment** — recurso do Kubernetes que gerencia ReplicaSets e pe
 
 A principal vantagem sobre o ReplicaSet puro é o suporte a **rolling updates**: ao atualizar a imagem, o Kubernetes cria um novo ReplicaSet gradualmente, substituindo os pods antigos pelos novos sem downtime. O histórico de revisões é mantido, permitindo rollback.
 
-### livenessProbe
+### Probes: startupProbe, readinessProbe e livenessProbe
 
-O `livenessProbe` instrui o Kubernetes a verificar periodicamente se o container ainda está saudável. Se o número de falhas consecutivas atingir o limite, o K8s reinicia o container automaticamente — sem intervenção manual.
+As três probes verificam a saúde do container via `GET /healthz`, mas cada uma tem um propósito e uma consequência diferente quando falha:
+
+| Probe | Quando atua | O que faz ao falhar |
+|---|---|---|
+| `startupProbe` | Só durante a inicialização | Bloqueia as outras probes até passar — evita reiniciar um container que só está demorando para subir |
+| `readinessProbe` | Continuamente, após o startup | Remove o Pod do Service (para de receber tráfego), sem reiniciar o container |
+| `livenessProbe` | Continuamente, após o startup | Reinicia o container |
 
 ```yaml
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  periodSeconds: 3       # verifica a cada 3s
+  failureThreshold: 30    # até 30 falhas (90s) antes de considerar startup travado
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  periodSeconds: 3
+  failureThreshold: 1    # 1 falha já remove o Pod do Service
+  # initialDelaySeconds: 10
+
 livenessProbe:
   httpGet:
-    path: /healthz  # endpoint que o K8s vai chamar
+    path: /healthz
     port: 8080
-  periodSeconds: 5      # intervalo entre cada verificação
-  failureThreshold: 3   # reinicia após 3 falhas consecutivas
-  timeoutSeconds: 1     # tempo máximo de espera por resposta
-  successThreshold: 1   # basta 1 resposta ok para considerar saudável
+  periodSeconds: 5
+  failureThreshold: 1    # 1 falha já reinicia o container
+  timeoutSeconds: 1
+  successThreshold: 1
+  # initialDelaySeconds: 15
 ```
 
-O K8s faz um `GET /healthz` a cada 5 segundos. Se o handler retornar `5xx` (ou não responder em 1 segundo) por 3 vezes seguidas, o container é reiniciado. Qualquer resposta `2xx` ou `3xx` conta como sucesso.
+Enquanto o `startupProbe` não passar, o Kubernetes **não executa** `readinessProbe` nem `livenessProbe` — isso evita que um container que demora para inicializar seja reiniciado ou tirado de circulação por engano.
 
-No `server.go`, o handler `/healthz` retorna `500` se o servidor estiver rodando há mais de 25 segundos, simulando uma falha — o que força o K8s a reiniciar o Pod após `periodSeconds × failureThreshold` = 15 segundos de falha contínua.
+No `server.go`, o handler `/healthz` agora só responde `200` quando o tempo de execução está **entre 10 e 30 segundos**; fora desse intervalo retorna `500`:
 
-> **livenessProbe vs readinessProbe**: a liveness reinicia o container quando ele trava. A readiness (não configurada aqui) remove o Pod do balanceamento de carga quando ele não está pronto para receber tráfego — sem reiniciá-lo.
+```go
+if durantion.Seconds() < 10 || durantion.Seconds() > 30 {
+    w.WriteHeader(500) // ainda "subindo" (< 10s) ou "degradado" (> 30s)
+} else {
+    w.WriteHeader(200)
+}
+```
+
+Isso simula o ciclo de vida completo:
+1. **0–10s**: `/healthz` retorna `500` → `startupProbe` ainda está tentando (tem até 90s de tolerância, então não falha o Pod)
+2. **10–30s**: `/healthz` retorna `200` → `startupProbe` passa, Pod fica `Ready` e começa a receber tráfego
+3. **> 30s**: `/healthz` volta a retornar `500` → `readinessProbe` falha primeiro (tira o Pod do Service) e, em seguida, `livenessProbe` falha e reinicia o container — recomeçando o ciclo
 
 ### Comandos kubectl (Deployment)
 

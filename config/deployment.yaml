@@ -16,15 +16,33 @@ spec:
     spec:
       containers:
         - name: go-server
-          image: "emersondp07/hello-go:v7"
+          image: "emersondp07/hello-go:v7.2"
+
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 3
+            failureThreshold: 30
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 3
+            failureThreshold: 1
+            # initialDelaySeconds: 10
+
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8080
             periodSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 1
             timeoutSeconds: 1
             successThreshold: 1
+            # initialDelaySeconds: 15
+
           envFrom:
             - configMapRef:
                 name: go-server-env
