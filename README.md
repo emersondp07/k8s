@@ -118,6 +118,25 @@ Define um **Deployment** — recurso do Kubernetes que gerencia ReplicaSets e pe
 
 A principal vantagem sobre o ReplicaSet puro é o suporte a **rolling updates**: ao atualizar a imagem, o Kubernetes cria um novo ReplicaSet gradualmente, substituindo os pods antigos pelos novos sem downtime. O histórico de revisões é mantido, permitindo rollback.
 
+### resources (requests e limits)
+
+Define quanto de CPU e memória o container pode usar. O Kubernetes usa esses valores para duas finalidades distintas:
+
+```yaml
+resources:
+  requests:
+    cpu: "0.3"    # 0.3 de 1 CPU (300 millicores)
+    memory: 20Mi  # mínimo garantido para o container rodar
+  limits:
+    cpu: "0.3"    # teto máximo de CPU — não pode ultrapassar
+    memory: 25Mi  # teto máximo de memória — se ultrapassar, o container é morto (OOMKilled)
+```
+
+- **`requests`**: quantidade que o K8s **reserva** no nó para o container. O scheduler usa esse valor para decidir em qual nó alocar o Pod — se nenhum nó tiver o suficiente disponível, o Pod fica `Pending`.
+- **`limits`**: quantidade **máxima** que o container pode consumir. CPU acima do limite é throttled (desacelerado). Memória acima do limite causa `OOMKilled` e o container é reiniciado.
+
+> Manter `requests` igual a `limits` (como neste caso com CPU) garante comportamento previsível e é necessário para que o HPA calcule o percentual de uso corretamente — ele divide o consumo atual pelo valor de `requests`.
+
 ### Probes: startupProbe, readinessProbe e livenessProbe
 
 As três probes verificam a saúde do container via `GET /healthz`, mas cada uma tem um propósito e uma consequência diferente quando falha:
@@ -532,4 +551,44 @@ kubectl exec -it <nome-do-pod> -- cat /go/myfamily/family.txt
 
 # Listar todos os ConfigMaps
 kubectl get configmaps
+```
+
+---
+
+## hpa.yaml
+
+Define um **HorizontalPodAutoscaler (HPA)** — recurso do Kubernetes que escala automaticamente o número de réplicas de um Deployment com base no consumo de CPU (ou outras métricas). Quando a carga aumenta, o HPA cria mais Pods; quando cai, remove o excesso.
+
+```yaml
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    name: go-server
+    kind: Deployment          # qual Deployment escalar
+  minReplicas: 1              # mínimo de Pods, mesmo sem carga
+  maxReplicas: 5              # máximo que pode escalar
+  targetCPUUtilizationPercentage: 25  # escala quando CPU média passar de 25% do request
+```
+
+O HPA calcula o uso de CPU de todos os Pods do Deployment e compara com o `targetCPUUtilizationPercentage` aplicado sobre o `requests.cpu` definido no container. Se a média ultrapassar 25%, novos Pods são criados até o limite de 5.
+
+> **Requisito**: o HPA depende do **metrics-server** instalado no cluster para coletar as métricas de CPU/memória dos Pods. Sem ele, o HPA fica com status `unknown` e não escala.
+
+### Comandos kubectl (HPA)
+
+```bash
+# Criar/aplicar o HPA
+kubectl apply -f config/hpa.yaml
+
+# Listar HPAs e ver status atual
+kubectl get hpa
+
+# Ver detalhes: réplicas atuais, uso de CPU, eventos de escalonamento
+kubectl describe hpa go-server-hpa
+
+# Monitorar em tempo real (atualiza a cada 5s)
+kubectl get hpa -w
+
+# Deletar o HPA (o Deployment continua com as réplicas que estiver)
+kubectl delete hpa go-server-hpa
 ```
