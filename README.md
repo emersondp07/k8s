@@ -640,3 +640,144 @@ kubectl describe pv go-server-pv
 # Deletar o PersistentVolume
 kubectl delete pv go-server-pv
 ```
+
+---
+
+## pvc.yaml
+
+Define uma **PersistentVolumeClaim (PVC)** — o "pedido" de armazenamento feito pela aplicação. Enquanto o PV é o recurso de armazenamento oferecido pelo cluster, a PVC descreve o que a aplicação precisa (tamanho, modo de acesso), e o Kubernetes procura um PV compatível para vincular (**bind**).
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: go-server-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+- **`accessModes`**: modo(s) de acesso exigido(s) — precisa estar entre os modos que o PV oferece.
+- **`resources.requests.storage`**: tamanho mínimo exigido. O Kubernetes procura um PV com capacidade `>=` esse valor.
+
+Essa PVC pede `ReadWriteOnce` e `1Gi`. O PV `go-server-pv` (seção acima) oferece `ReadWriteOnce` + `ReadWriteMany` e exatamente `1Gi` — compatíveis, então o bind acontece automaticamente (nenhum dos dois define `storageClassName`, então ambos usam a classe vazia `""` e podem casar).
+
+Para o Pod realmente usar esse armazenamento, falta referenciar a PVC no `volumes` do Deployment (mesmo padrão já usado com `configMap`, trocando por `persistentVolumeClaim`):
+
+```yaml
+volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: go-server-pvc
+```
+
+> Esse trecho ainda não está no `deployment.yaml` deste projeto — a PVC pode ficar `Bound` ao PV, mas nenhum Pod está montando o volume ainda.
+
+### Comandos kubectl (PersistentVolumeClaim)
+
+```bash
+# Criar/aplicar a PVC
+kubectl apply -f config/pvc.yaml
+
+# Listar PVCs e ver status (Pending, Bound)
+kubectl get pvc
+
+# Ver detalhes (qual PV foi vinculado, capacidade, access modes)
+kubectl describe pvc go-server-pvc
+
+# Conferir que o PV correspondente mudou de Available para Bound
+kubectl get pv
+
+# Deletar a PVC
+kubectl delete pvc go-server-pvc
+```
+
+---
+
+## statefulset.yaml
+
+Define um **StatefulSet** — recurso para aplicações que precisam de identidade estável e armazenamento persistente por réplica, como bancos de dados. Diferente do Deployment (onde os Pods são intercambiáveis entre si), cada Pod de um StatefulSet tem:
+
+- **Nome previsível e fixo**: `mysql-0`, `mysql-1`, `mysql-2` (índice sequencial, não hash aleatório).
+- **Ordem garantida** de criação, atualização e remoção: `mysql-0` sempre sobe antes de `mysql-1`, e é removido por último.
+- **Armazenamento próprio por Pod**: se configurado com `volumeClaimTemplates`, cada réplica recebe sua própria PVC, que persiste mesmo se o Pod for recriado (ele volta com o mesmo disco).
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql-h
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: root
+```
+
+- **`serviceName`**: nome do Service **headless** (`clusterIP: None`) que gerencia a rede do StatefulSet. É ele quem dá a cada Pod um DNS estável: `mysql-0.mysql-h`, `mysql-1.mysql-h`, `mysql-2.mysql-h`.
+- **`replicas: 3`**: três Pods MySQL, criados e escalados em ordem (`mysql-0` → `mysql-1` → `mysql-2`).
+- Sem `volumeClaimTemplates` neste manifesto, os três Pods usam apenas o filesystem efêmero do container — cada um perde os dados do banco se for recriado. Persistência real por Pod exigiria algo como:
+
+```yaml
+volumeClaimTemplates:
+  - metadata:
+      name: mysql-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+```
+
+> Esse padrão gera automaticamente uma PVC por Pod (`mysql-data-mysql-0`, `mysql-data-mysql-1`, `mysql-data-mysql-2`), diferente da PVC única compartilhada usada em `pvc.yaml`.
+
+> **Falta ainda neste projeto**: o Service headless `mysql-h` referenciado em `serviceName` não existe — sem ele, o StatefulSet sobe os Pods normalmente, mas o DNS estável (`mysql-0.mysql-h`) não funciona.
+
+### Deployment vs. StatefulSet
+
+| | Deployment | StatefulSet |
+|---|---|---|
+| Nome dos Pods | Hash aleatório (`go-server-5446c7d9c5-tw564`) | Índice fixo (`mysql-0`, `mysql-1`, ...) |
+| Ordem de criação/remoção | Paralela, sem garantia | Sequencial (0, 1, 2, ...) |
+| Armazenamento | Compartilhado ou nenhum | Uma PVC própria por Pod (via `volumeClaimTemplates`) |
+| DNS | Só via Service comum | DNS estável por Pod via Service headless |
+| Uso típico | Apps stateless (APIs, web servers) | Bancos de dados, filas, sistemas com estado |
+
+### Comandos kubectl (StatefulSet)
+
+```bash
+# Criar/aplicar o StatefulSet
+kubectl apply -f config/statefulset.yaml
+
+# Listar StatefulSets
+kubectl get statefulsets
+kubectl get sts
+
+# Ver detalhes (ordem de criação, eventos, réplicas prontas)
+kubectl describe statefulset mysql
+
+# Ver os Pods sendo criados em ordem (mysql-0, depois mysql-1, depois mysql-2)
+kubectl get pods -l app=mysql -w
+
+# Escalar o número de réplicas
+kubectl scale statefulset mysql --replicas=5
+
+# Deletar o StatefulSet (por padrão não deleta as PVCs geradas por volumeClaimTemplates)
+kubectl delete statefulset mysql
+kubectl delete sts mysql
+```
