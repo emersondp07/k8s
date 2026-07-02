@@ -592,3 +592,51 @@ kubectl get hpa -w
 # Deletar o HPA (o Deployment continua com as réplicas que estiver)
 kubectl delete hpa go-server-hpa
 ```
+
+---
+
+## pv.yaml
+
+Define um **PersistentVolume (PV)** — recurso de armazenamento no cluster com ciclo de vida independente de qualquer Pod. Diferente do volume `configMap` usado em `configmap-family.yaml` (que só existe enquanto referenciado), o PV é um objeto próprio do cluster: pode ser reaproveitado por Pods diferentes ao longo do tempo, mesmo que sejam recriados.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: go-server-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+    - ReadWriteMany
+```
+
+- **`capacity.storage`**: tamanho do volume (aqui, `1Gi`).
+- **`accessModes`**: formas de montagem que o volume suporta:
+
+| accessMode | Significado |
+|---|---|
+| `ReadWriteOnce` (RWO) | Montado para leitura/escrita por um único nó por vez |
+| `ReadOnlyMany` (ROX) | Montado somente leitura por múltiplos nós simultaneamente |
+| `ReadWriteMany` (RWX) | Montado para leitura/escrita por múltiplos nós simultaneamente |
+
+> Um PV pode listar mais de um `accessMode` como suportado, mas cada montagem em uso usa apenas um deles por vez — quem escolhe é a **PersistentVolumeClaim (PVC)** que reivindica o volume.
+
+> **Importante**: este manifesto não declara uma origem de armazenamento (`hostPath`, `nfs`, `csi` etc.), então o PV fica registrado na API mas sem um backend real de disco. Além disso, um PV sozinho não é montado em nenhum Pod — é necessário criar uma **PVC** que o reivindique e referenciar essa PVC no `volumes` do Deployment (o mesmo padrão já usado com `configMap` em `configmap-family.yaml`, trocando `configMap` por `persistentVolumeClaim`).
+
+### Comandos kubectl (PersistentVolume)
+
+```bash
+# Criar/aplicar o PersistentVolume
+kubectl apply -f config/pv.yaml
+
+# Listar PersistentVolumes e ver status (Available, Bound, Released)
+kubectl get pv
+
+# Ver detalhes do PV (capacidade, access modes, claim vinculada)
+kubectl describe pv go-server-pv
+
+# Deletar o PersistentVolume
+kubectl delete pv go-server-pv
+```

@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: go-server
-          image: "emersondp07/hello-go:v7.2"
+          image: "emersondp07/hello-go:v7.3"
 
           resources:
             requests:
