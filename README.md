@@ -746,7 +746,7 @@ volumeClaimTemplates:
 
 > Esse padrão gera automaticamente uma PVC por Pod (`mysql-data-mysql-0`, `mysql-data-mysql-1`, `mysql-data-mysql-2`), diferente da PVC única compartilhada usada em `pvc.yaml`.
 
-> **Falta ainda neste projeto**: o Service headless `mysql-h` referenciado em `serviceName` não existe — sem ele, o StatefulSet sobe os Pods normalmente, mas o DNS estável (`mysql-0.mysql-h`) não funciona.
+> O Service headless `mysql-h` referenciado em `serviceName` é definido em [mysql-service-h.yaml](#mysql-service-hyaml), logo abaixo.
 
 ### Deployment vs. StatefulSet
 
@@ -780,4 +780,54 @@ kubectl scale statefulset mysql --replicas=5
 # Deletar o StatefulSet (por padrão não deleta as PVCs geradas por volumeClaimTemplates)
 kubectl delete statefulset mysql
 kubectl delete sts mysql
+```
+
+---
+
+## mysql-service-h.yaml
+
+Define o Service **headless** que o StatefulSet `mysql` usa para dar identidade de rede estável a cada réplica.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-h
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+  clusterIP: None
+```
+
+- **`clusterIP: None`**: é isso que torna o Service "headless". Um Service normal cria um IP virtual único e faz load balancing entre os Pods que casam com o `selector`; um Service headless não cria IP nenhum — o CoreDNS passa a resolver o nome do Service diretamente para os IPs de **cada Pod individualmente**.
+- **`selector: app: mysql`**: casa com os Pods criados pelo `statefulset.yaml`.
+- **`port: 3306`**: porta padrão do MySQL, a mesma exposta pelo container `image: mysql` do StatefulSet.
+
+Combinando esse Service com `serviceName: mysql-h` no StatefulSet, cada réplica ganha um registro DNS próprio e previsível, no formato `<nome-do-pod>.<serviceName>`:
+
+- `mysql-0.mysql-h`
+- `mysql-1.mysql-h`
+- `mysql-2.mysql-h`
+
+Isso é o que diferencia StatefulSet de Deployment na prática: com Deployment + Service comum, só é possível falar com "algum Pod" (round-robin, sem controle de qual). Com StatefulSet + Service headless, é possível endereçar um Pod específico — essencial para MySQL, onde tipicamente um nó é o primary (aceita escrita) e os demais são replicas (só leitura), e a aplicação precisa diferenciar `mysql-0` dos outros.
+
+### Comandos kubectl (Service headless)
+
+```bash
+# Criar/aplicar o Service headless
+kubectl apply -f config/mysql-service-h.yaml
+
+# Ver que não há CLUSTER-IP (aparece "None")
+kubectl get service mysql-h
+
+# Ver os endpoints — um IP por Pod, ao contrário de um Service normal
+kubectl get endpoints mysql-h
+
+# Resolver o DNS de um Pod específico de dentro do cluster (a partir de outro pod)
+kubectl run -it --rm dns-test --image=busybox -- nslookup mysql-0.mysql-h
+
+# Deletar o Service headless
+kubectl delete service mysql-h
 ```
