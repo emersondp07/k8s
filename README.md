@@ -366,6 +366,66 @@ kubectl delete svc go-server-service
 
 ---
 
+## service-nodeport.yaml e service-loadbalancer.yaml
+
+Duas variações do mesmo `go-server-service` visto acima, uma para cada `type` de Service exposto externamente. Servem como referência de estudo — **não aplique as duas junto com `service.yaml`**: como as três usam `metadata.name: go-server-service`, aplicar mais de uma sobrescreve a anterior (o último `kubectl apply` "ganha").
+
+**`service-nodeport.yaml`** — expõe a porta em todos os nós do cluster:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-server-service
+spec:
+  selector:
+    app: go-server
+  type: NodePort
+  ports:
+    - name: go-server-service
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+      nodePort: 30001
+```
+
+- **`nodePort: 30001`**: porta fixa aberta em **todos** os nós (control-plane e workers). Acessível via `<IP-do-nó>:30001`. Se omitido, o Kubernetes escolhe uma porta aleatória na faixa `30000–32767`.
+
+**`service-loadbalancer.yaml`** — pede um load balancer externo ao provedor do cluster:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-server-service
+spec:
+  selector:
+    app: go-server
+  type: LoadBalancer
+  ports:
+    - name: go-server-service
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+```
+
+- Sem um cloud provider (ou algo como MetalLB) para provisionar o balanceador, o `EXTERNAL-IP` fica `<pending>` para sempre — é o que acontece no cluster local `kind` deste projeto (visto em `kubectl get svc`).
+
+### Comandos kubectl (aplicar uma variante específica)
+
+```bash
+# Trocar o Service ativo para NodePort
+kubectl apply -f config/service-nodeport.yaml
+
+# Trocar o Service ativo para LoadBalancer
+kubectl apply -f config/service-loadbalancer.yaml
+
+# Conferir o type e as portas atuais
+kubectl get svc go-server-service
+```
+
+---
+
 ## configmap-env.yaml
 
 Define um **ConfigMap** — recurso do Kubernetes para armazenar configurações não-sensíveis como pares chave-valor. Desacopla a configuração da imagem Docker: a mesma imagem pode rodar com valores diferentes em cada ambiente (dev, staging, prod) sem precisar ser reconstruída.
@@ -551,6 +611,52 @@ kubectl exec -it <nome-do-pod> -- cat /go/myfamily/family.txt
 
 # Listar todos os ConfigMaps
 kubectl get configmaps
+```
+
+---
+
+## metrics-server.yaml
+
+Instala o **metrics-server** — componente que coleta métricas de uso de CPU/memória de Pods e nós, expostas na API `metrics.k8s.io`. É um pré-requisito do `hpa.yaml` (seção seguinte): sem ele, o HPA não tem de onde ler o consumo de CPU e fica com status `<unknown>`.
+
+Este arquivo é o manifesto oficial do projeto [kubernetes-sigs/metrics-server](https://github.com/kubernetes-sigs/metrics-server), praticamente sem alterações. Ele cria, no namespace `kube-system`:
+
+| Recurso | Papel |
+|---|---|
+| `ServiceAccount` + `ClusterRole`/`ClusterRoleBinding` (x4) | RBAC: permite ao metrics-server ler métricas de `pods`/`nodes` e ser autenticado pela API do cluster |
+| `Deployment` | O próprio metrics-server, que fala com o kubelet de cada nó para coletar as métricas |
+| `Service` | Expõe o Deployment na porta `443` para a API do Kubernetes consultar |
+| `APIService (v1beta1.metrics.k8s.io)` | Registra o endpoint `metrics.k8s.io` na API aggregation layer, é o que permite `kubectl top` e o HPA funcionarem |
+
+A única flag ajustada para funcionar em clusters locais (como `kind`) é `--kubelet-insecure-tls` nos `args` do Deployment:
+
+```yaml
+args:
+  - --cert-dir=/tmp
+  - --secure-port=10250
+  - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+  - --kubelet-use-node-status-port
+  - --kubelet-insecure-tls   # ignora o certificado (auto-assinado) do kubelet
+  - --metric-resolution=15s
+```
+
+> Em produção normalmente **não** se usa `--kubelet-insecure-tls` — em clusters gerenciados (EKS, GKE, AKS) o certificado do kubelet costuma ser válido e essa flag fica de fora.
+
+### Comandos kubectl (metrics-server)
+
+```bash
+# Instalar o metrics-server
+kubectl apply -f config/metrics-server.yaml
+
+# Conferir que o Deployment ficou pronto (namespace kube-system)
+kubectl get deployment metrics-server -n kube-system
+
+# Testar se a API de métricas está respondendo
+kubectl top nodes
+kubectl top pods
+
+# Remover o metrics-server
+kubectl delete -f config/metrics-server.yaml
 ```
 
 ---
@@ -831,3 +937,236 @@ kubectl run -it --rm dns-test --image=busybox -- nslookup mysql-0.mysql-h
 # Deletar o Service headless
 kubectl delete service mysql-h
 ```
+
+---
+
+## ingress.yaml
+
+Define um **Ingress** — recurso que roteia tráfego HTTP/HTTPS externo para Services internos com base em regras de host/path, evitando expor um `LoadBalancer` ou `NodePort` por serviço. Quem interpreta essas regras é o **Ingress Controller** (o `ingress-nginx` instalado via Helm neste projeto).
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-host
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt"
+    ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  rules:
+    - host: "example.com"
+      http:
+        paths:
+          - pathType: Prefix
+            path: "/"
+            backend:
+              service:
+                name: go-server-service
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - "example.com"
+      secretName: letsencrypt-tls
+```
+
+- **`rules[].host`**: domínio que aciona essa regra (`example.com`, apenas ilustrativo — precisaria apontar de fato para o IP do Ingress Controller via DNS).
+- **`rules[].http.paths`**: cada path define para qual Service/porta o tráfego é roteado (`pathType: Prefix` casa `/` e qualquer coisa abaixo).
+- **`tls`**: habilita HTTPS para os hosts listados, usando o certificado guardado no Secret `letsencrypt-tls` — Secret esse que o `cert-manager` cria automaticamente a partir do `ClusterIssuer` (próxima seção).
+- **`cert-manager.io/cluster-issuer`**: annotation lida pelo `cert-manager` (não pelo ingress-nginx) — instrui a gerar/renovar o certificado TLS usando o `ClusterIssuer` chamado `letsencrypt`.
+
+> **Nota**: `kubernetes.io/ingress.class` está deprecated em favor do campo `spec.ingressClassName: nginx`, e `ingress.kubernetes.io/force-ssl-redirect` é a annotation legada do ingress-nginx — a atual é `nginx.ingress.kubernetes.io/force-ssl-redirect`. Ambas tendem a ser ignoradas silenciosamente pelas versões recentes do controller, em vez de dar erro (não impedem o `apply`, mas valem a pena atualizar).
+
+### Comandos kubectl (Ingress)
+
+```bash
+# Criar/aplicar o Ingress
+kubectl apply -f config/ingress.yaml
+
+# Listar Ingresses e ver o endereço atribuído
+kubectl get ingress
+
+# Ver detalhes (regras, backend, eventos do controller)
+kubectl describe ingress ingress-host
+
+# Testar localmente sem DNS real, resolvendo o host manualmente
+curl -H "Host: example.com" http://localhost/
+
+# Deletar o Ingress
+kubectl delete ingress ingress-host
+```
+
+---
+
+## cluster-issuer.yaml
+
+Define um **ClusterIssuer** — recurso do `cert-manager` que descreve *como* emitir certificados TLS (neste caso, via Let's Encrypt/ACME). É "Cluster" porque pode ser referenciado por Ingresses de qualquer namespace, diferente de um `Issuer` comum (namespaced).
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+  namespace: cert-manager
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: emerson.dantaspereira@hotmail.com
+    privateKeySecretRef:
+      name: letsencrypt-tls
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+```
+
+- **`spec.acme.server`**: endpoint do diretório ACME do Let's Encrypt — este é o ambiente de **produção** (rate limits baixos; para testes, o normal é usar primeiro `https://acme-staging-v02.api.letsencrypt.org/directory`).
+- **`privateKeySecretRef.name`**: Secret onde o cert-manager guarda a chave privada da conta ACME (não é o Secret do certificado do site, esse é o `letsencrypt-tls` referenciado no `tls.secretName` do `ingress.yaml`).
+- **`solvers[].http01.ingress.class`**: resolve o desafio `HTTP-01` criando temporariamente um path no Ingress Controller `nginx` para o Let's Encrypt validar posse do domínio.
+
+> **Nota**: `ClusterIssuer` é um recurso **cluster-scoped** (não pertence a namespace algum); o campo `metadata.namespace: cert-manager` é ignorado pela API, mas deixa a leitura do manifesto confusa.
+
+### Comandos kubectl (ClusterIssuer)
+
+```bash
+# Criar/aplicar o ClusterIssuer
+kubectl apply -f config/cluster-issuer.yaml
+
+# Listar ClusterIssuers e ver se está Ready
+kubectl get clusterissuer
+
+# Ver detalhes (condições, erros de emissão)
+kubectl describe clusterissuer letsencrypt
+
+# Acompanhar o Certificate gerado a partir do Ingress (se o cert-manager estiver instalado)
+kubectl get certificate -A
+
+# Deletar o ClusterIssuer
+kubectl delete clusterissuer letsencrypt
+```
+
+---
+
+## Namespaces (config/namespaces/)
+
+Um **Namespace** cria uma divisão lógica dentro do mesmo cluster físico — como "pastas" que isolam nomes de recursos entre si. Dois recursos podem ter o mesmo `metadata.name` desde que estejam em namespaces diferentes (é por isso que o `ingress-nginx-controller` e o `go-server-service` puderam conviver sem conflito quando estavam em namespaces distintos, visto mais cedo nesta conversa). Recursos **cluster-scoped** (como `PersistentVolume` e `ClusterIssuer`) não pertencem a namespace nenhum — só recursos namespaced (`Pod`, `Service`, `Deployment`, `ConfigMap` etc.) são afetados.
+
+Este projeto tem um exemplo em `config/namespaces/deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+        - name: server
+          image: <Image>
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          ports:
+            - containerPort: 3000
+```
+
+> Esse manifesto não define `metadata.namespace` — o namespace de destino é decidido no momento do `apply` (via `-n`) ou pelo namespace padrão do contexto atual (ver seção **Context** abaixo). O campo `image: <Image>` também é só um placeholder — precisa ser substituído por uma imagem real antes de aplicar.
+
+### Criando e usando Namespaces
+
+**Forma imperativa** (rápida, sem YAML):
+
+```bash
+kubectl create namespace estudos
+```
+
+**Forma declarativa** (versionável, mesmo padrão dos outros arquivos deste repo):
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: estudos
+```
+
+Depois de criado, um recurso pode ser direcionado ao namespace de duas formas:
+
+```yaml
+# 1. Declarando no próprio manifesto
+metadata:
+  name: server
+  namespace: estudos
+```
+
+```bash
+# 2. Passando -n/--namespace no apply (sobrescreve o que estiver no manifesto)
+kubectl apply -f config/namespaces/deployment.yaml -n estudos
+```
+
+### Comandos kubectl (Namespace)
+
+```bash
+# Criar o namespace
+kubectl create namespace estudos
+
+# Listar namespaces existentes
+kubectl get namespaces
+kubectl get ns
+
+# Aplicar um recurso dentro de um namespace específico
+kubectl apply -f config/namespaces/deployment.yaml -n estudos
+
+# Listar recursos de um namespace específico
+kubectl get pods -n estudos
+
+# Listar recursos de TODOS os namespaces de uma vez
+kubectl get pods -A
+kubectl get pods --all-namespaces
+
+# Ver detalhes de um namespace
+kubectl describe namespace estudos
+
+# Deletar o namespace (remove TODOS os recursos dentro dele também)
+kubectl delete namespace estudos
+```
+
+---
+
+## Context (kubeconfig)
+
+Um **context** no `kubeconfig` (`~/.kube/config`) é a combinação de **cluster + usuário + namespace padrão**. É o que permite alternar entre clusters diferentes (ex: `kind` local vs. um cluster de produção) ou entre namespaces diferentes do mesmo cluster, sem precisar passar `--context`/`--namespace` em todo comando.
+
+Ao criar um cluster com `kind create cluster --config config/kind.yaml`, o kind já cria e ativa automaticamente um context chamado `kind-<nome-do-cluster>`.
+
+### Comandos kubectl (context)
+
+```bash
+# Ver o context ativo no momento
+kubectl config current-context
+
+# Listar todos os contexts disponíveis no kubeconfig
+kubectl config get-contexts
+
+# Trocar de context (ex: mudar de cluster)
+kubectl config use-context kind-fullcycle
+
+# Mudar o namespace padrão do context atual (evita repetir -n em todo comando)
+kubectl config set-context --current --namespace=estudos
+
+# Conferir o namespace padrão configurado no context atual
+kubectl config view --minify | grep namespace
+
+# Ver o kubeconfig completo (clusters, usuários e contexts)
+kubectl config view
+```
+
+> Depois de rodar `set-context --current --namespace=estudos`, comandos como `kubectl get pods` passam a listar o namespace `estudos` por padrão, sem precisar de `-n estudos` a cada vez — útil quando se está trabalhando em um namespace por um bom tempo.
