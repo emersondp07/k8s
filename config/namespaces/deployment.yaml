@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: server
+  namespace: dev
 spec:
   selector:
     matchLabels:
@@ -11,9 +12,10 @@ spec:
       labels:
         app: server
     spec:
+      serviceAccountName: server
       containers:
         - name: server
-          image: <Image>
+          image: emersondp07/hello-go:v2
           resources:
             limits:
               memory: "128Mi"

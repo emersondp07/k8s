@@ -42,3 +42,10 @@ kubectl get pods
 - [k8s/pod.yaml](k8s/pod.yaml) — bare Pod manifest using image `emersondp07/hello-go:latest`
 
 The Docker image must be pushed to Docker Hub (or loaded into kind) before the pod can start, since `pod.yaml` references the remote image tag.
+
+## RBAC / Security
+
+- [config/namespaces/security.yaml](config/namespaces/security.yaml) — `ServiceAccount` `server` + namespaced `Role`/`RoleBinding` (`server-read`), granting read-only access (`get`, `list`, `watch`) on `pods`, `services`, and `deployments` within the `dev` namespace only.
+- [config/security-cluster.yaml](config/security-cluster.yaml) — same `ServiceAccount` `server` and same permission set, but as a `ClusterRole`/`ClusterRoleBinding`, granting read-only access cluster-wide (across all namespaces) instead of just `dev`.
+- [config/namespaces/deployment.yaml](config/namespaces/deployment.yaml) sets `serviceAccountName: server` (instead of the `default` ServiceAccount) so the pod runs with these read-only permissions.
+- Only apply one of the two (namespaced `Role` or cluster-wide `ClusterRole`) depending on whether the pod needs access limited to `dev` or across the whole cluster — applying both is redundant since the `ClusterRoleBinding` already covers everything the `RoleBinding` does.
